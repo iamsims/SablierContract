@@ -16,4 +16,9 @@ library Types {
         address tokenAddress;
         bool isEntity;
     }
+
+    struct TokenBalance {
+        address tokenAddress; // address of the Token
+        uint256 incomingBalance; // sum of all withdrawable tokens from incoming streams
+    }
 }

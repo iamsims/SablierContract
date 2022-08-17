@@ -1,4 +1,5 @@
-pragma solidity=0.5.17;
+pragma solidity =0.5.17;
+pragma experimental ABIEncoderV2;
 
 import "./IERC20.sol";
 import "./SafeERC20.sol";
@@ -9,7 +10,7 @@ import "./ISablier.sol";
 import "./Types.sol";
 
 /**
- * @title Sabliera
+ * @title Sablier
  * @author Sablier
  * @notice Money streaming.
  */
@@ -28,9 +29,16 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
      */
     mapping(uint256 => Types.Stream) private streams;
 
-    /*** Modifiers ***/
+    mapping(address => uint256) private incomingStreamCount;
+    mapping(address => uint256) private outgoingStreamCount;
 
+    mapping(address => uint256) public tokenExists; //tracks if the tokenExists and stores index of the token
+    address[] public tokens;
+    uint256 public tokenCount;
+
+    /*** Modifiers ***/
     /**
+
      * @dev Throws if the caller is not the sender of the recipient of the stream.
      */
     modifier onlySenderOrRecipient(uint256 streamId) {
@@ -259,17 +267,21 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
             "next stream id calculation error"
         );
 
-        IERC20(tokenAddress).safeTransferFrom(
-            msg.sender,
-            address(this),
-            deposit
-        );
+        incomingStreamCount[recipient] += 1;
+        outgoingStreamCount[msg.sender] += 1;
+
+        if (tokenExists[tokenAddress] == 0) {
+            tokens.push(tokenAddress);
+            tokenCount++;
+            tokenExists[tokenAddress] = tokenCount;
+        }
 
         IERC20(tokenAddress).safeTransferFrom(
             msg.sender,
             address(this),
             deposit
         );
+
         emit CreateStream(
             streamId,
             msg.sender,
@@ -299,7 +311,7 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
         returns (bool)
     {
         require(amount > 0, "amount is zero");
-        Types.Stream memory stream = streams[streamId];
+        Types.Stream memory stream = streams[streamId]; //storage banaye hune ho
 
         uint256 balance = balanceOf(streamId, stream.recipient);
         require(balance >= amount, "amount exceeds the available balance");
@@ -315,7 +327,11 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
          */
         assert(mathErr == MathError.NO_ERROR);
 
-        if (streams[streamId].remainingBalance == 0) delete streams[streamId];
+        if (streams[streamId].remainingBalance == 0) {
+            incomingStreamCount[stream.recipient] -= 1;
+            outgoingStreamCount[stream.sender] -= 1;
+            delete streams[streamId];
+        }
 
         IERC20(stream.tokenAddress).safeTransfer(stream.recipient, amount);
         emit WithdrawFromStream(streamId, stream.recipient, amount);
@@ -337,11 +353,13 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
         onlySenderOrRecipient(streamId)
         returns (bool)
     {
-        Types.Stream memory stream = streams[streamId];
+        Types.Stream memory stream = streams[streamId]; //wouldn't have been better if storage?
         uint256 senderBalance = balanceOf(streamId, stream.sender);
         uint256 recipientBalance = balanceOf(streamId, stream.recipient);
 
         delete streams[streamId];
+        incomingStreamCount[stream.recipient] -= 1;
+        outgoingStreamCount[stream.sender] -= 1;
 
         IERC20 token = IERC20(stream.tokenAddress);
         if (recipientBalance > 0)
@@ -356,5 +374,196 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
             recipientBalance
         );
         return true;
+    }
+
+    function getIncomingStream(address reciever)
+        external
+        view
+        returns (Types.Stream[] memory)
+    {
+        Types.Stream[] memory incomingStream = new Types.Stream[](
+            incomingStreamCount[reciever]
+        );
+
+        uint256 j = 0;
+        for (uint256 i = 100000; i < nextStreamId; i++) {
+            Types.Stream storage stream = streams[i];
+
+            if (stream.recipient == reciever) {
+                incomingStream[j] = stream;
+                j++;
+            }
+        }
+        return incomingStream;
+    }
+
+    function getOutgoingStreams(address sender)
+        external
+        view
+        returns (Types.Stream[] memory)
+    {
+        Types.Stream[] memory outgoingStream = new Types.Stream[](
+            outgoingStreamCount[sender]
+        );
+        uint256 j = 0;
+        for (uint256 i = 100000; i < nextStreamId; i++) {
+            Types.Stream storage stream = streams[i];
+            if (stream.sender == sender) {
+                outgoingStream[j] = stream;
+                j++;
+            }
+        }
+        return outgoingStream;
+    }
+
+    //offset = where to start looking from, offset = 0 means start looking from 1st item, offset= 1 means leave 1 element
+    //limit = number of items to load
+    function getIncomingStreams(
+        address receiver,
+        uint256 limit,
+        uint256 offset
+    ) external view returns (uint256 newOffset, Types.Stream[] memory) {
+        uint256 j;
+        uint256 streamsLength = incomingStreamCount[receiver];
+
+        require(offset >= 0, "Offset cannot be negative");
+        // require(offset<streamsLength, "Offset is greater than the length of total incoming streams of the user");
+
+        if (limit != 0 && limit + offset > streamsLength) {
+            if (limit > streamsLength - offset) {
+                limit = streamsLength - offset;
+            } else {
+                limit = 0;
+            }
+        }
+
+        Types.Stream[] memory incomingStream = new Types.Stream[](limit);
+
+        if (limit == 0) {
+            return (offset, incomingStream);
+        }
+
+        uint256 n_streams;
+        for (uint256 i = 100000; i < nextStreamId; i++) {
+            Types.Stream storage stream = streams[i];
+
+            if (stream.recipient == receiver) {
+                j++;
+
+                if (j - 1 < offset) {
+                    //haven't reached the offset value yet
+                    continue;
+                }
+
+                //adding code here
+                incomingStream[n_streams] = stream;
+                n_streams++;
+
+                if (n_streams == limit) {
+                    //no need to look after limit number of streams is added
+                    break;
+                }
+            }
+        }
+
+        return (offset + n_streams, incomingStream);
+    }
+
+    function getOutgoingStreams(
+        address sender,
+        uint256 limit,
+        uint256 offset
+    ) external view returns (uint256 newOffset, Types.Stream[] memory) {
+        uint256 j;
+        uint256 streamsLength = outgoingStreamCount[sender];
+        // require(streamsLength>0, "No outgoing streams for this user");
+
+        require(offset >= 0, "Offset cannot be negative");
+        // require(offset<streamsLength, "Offset is greater than the length of total outgoing streams of the user");
+
+        if (limit != 0 && limit + offset > streamsLength) {
+            limit = streamsLength - offset;
+            if (limit > streamsLength - offset) {
+                limit = streamsLength - offset;
+            } else {
+                limit = 0;
+            }
+        }
+
+        Types.Stream[] memory outgoingStream = new Types.Stream[](limit);
+
+        if (limit == 0) {
+            return (offset, outgoingStream);
+        }
+
+        uint256 n_streams;
+
+        for (uint256 i = 100000; i < nextStreamId; i++) {
+            Types.Stream storage stream = streams[i];
+
+            if (stream.sender == sender) {
+                j++;
+
+                if (j - 1 < offset) {
+                    //haven't reached the offset value yet
+                    continue;
+                }
+
+                //adding code here
+                outgoingStream[n_streams] = stream;
+                n_streams++;
+
+                if (n_streams == limit) {
+                    //no need to look after limit number of streams is added
+                    break;
+                }
+            }
+        }
+
+        return (offset + n_streams, outgoingStream);
+    }
+
+    function getTokenBalance(address user)
+        external
+        view
+        returns (Types.TokenBalance[] memory)
+    {
+        uint256[] memory incomingStreamsID = new uint256[](
+            incomingStreamCount[user]
+        );
+
+        //get ids of all the incoming streams for the user
+        uint256 j = 0;
+        for (uint256 i = 100000; i < nextStreamId; i++) {
+            Types.Stream storage stream = streams[i];
+
+            if (stream.recipient == user) {
+                incomingStreamsID[j] = i;
+                j++;
+            }
+        }
+
+        Types.TokenBalance[] memory tokenBalance = new Types.TokenBalance[](
+            tokens.length
+        );
+
+        //initialize the tokenbalance array
+        for (uint256 i = 0; i < tokens.length; i++) {
+            tokenBalance[i] = Types.TokenBalance({
+                tokenAddress: tokens[i],
+                incomingBalance: 0
+            });
+        }
+
+        for (uint256 i = 0; i < incomingStreamsID.length; i++) {
+            Types.Stream memory incomingStream = streams[incomingStreamsID[i]];
+            uint256 indexoftoken = tokenExists[incomingStream.tokenAddress] - 1; //positioning starts from 1 in tokenExists
+            tokenBalance[indexoftoken].incomingBalance += balanceOf(
+                incomingStreamsID[i],
+                user
+            );
+        }
+
+        return tokenBalance;
     }
 }
