@@ -32,9 +32,9 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
     mapping(address => uint256) private incomingStreamCount;
     mapping(address => uint256) private outgoingStreamCount;
 
-    mapping(address => uint256) public tokenExists; //tracks if the tokenExists and stores index of the token
-    address[] public tokens;
-    uint256 public tokenCount;
+    mapping(address => uint256) private tokenExists; //tracks if the tokenExists and stores index of the token
+    address[] private tokens;
+    uint256 private tokenCount;
 
     /*** Modifiers ***/
     /**
@@ -397,7 +397,7 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
         return incomingStream;
     }
 
-    function getOutgoingStreams(address sender)
+    function getOutgoingStream(address sender)
         external
         view
         returns (Types.Stream[] memory)
@@ -427,7 +427,6 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
         uint256 streamsLength = incomingStreamCount[receiver];
 
         require(offset >= 0, "Offset cannot be negative");
-        // require(offset<streamsLength, "Offset is greater than the length of total incoming streams of the user");
 
         if (limit != 0 && limit + offset > streamsLength) {
             if (limit > streamsLength - offset) {
@@ -476,13 +475,10 @@ contract Sablier is ISablier, ReentrancyGuard, CarefulMath {
     ) external view returns (uint256 newOffset, Types.Stream[] memory) {
         uint256 j;
         uint256 streamsLength = outgoingStreamCount[sender];
-        // require(streamsLength>0, "No outgoing streams for this user");
 
         require(offset >= 0, "Offset cannot be negative");
-        // require(offset<streamsLength, "Offset is greater than the length of total outgoing streams of the user");
 
         if (limit != 0 && limit + offset > streamsLength) {
-            limit = streamsLength - offset;
             if (limit > streamsLength - offset) {
                 limit = streamsLength - offset;
             } else {
